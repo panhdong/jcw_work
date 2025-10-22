@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Factory Floor Plan – Interactive Hotspots</title>
+  <style>
+    :root{--bg:#0b0f14;--panel:#141a22;--muted:#8aa0b7;--accent:#5fb3ff;--ok:#28c76f;--warn:#ff9f43;--bad:#ea5455}
+    html,body{height:100%;margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,"Noto Sans",ui-sans-serif,sans-serif;background:var(--bg);color:#e8eef5}
+    .wrap{max-width:1400px;margin:0 auto;padding:12px}
+    .board{position:relative;display:inline-block;background:#0f141b;border:1px solid #233041;border-radius:16px;box-shadow:0 10px 30px rgba(0,0,0,.35);overflow:hidden}
+    .board img{display:block;max-width:100%;height:auto}
+    .hotspot{position:absolute;transform:translate(-50%,-50%);width:18px;height:18px;border-radius:999px;border:2px solid white;background:var(--accent);cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.45)}
+    .hotspot[data-status="OK"]{background:var(--ok)}
+    .hotspot[data-status="CẢNH BÁO"], .hotspot[data-status="WARNING"]{background:var(--warn)}
+    .hotspot[data-status="SỰ CỐ"], .hotspot[data-status="ERROR"]{background:var(--bad)}
+    .hotspot:focus{outline:3px solid rgba(255,255,255,.35)}
+
+    .popover{position:absolute;min-width:280px;max-width:380px;background:var(--panel);border:1px solid #213041;border-radius:12px;box-shadow:0 16px 50px rgba(0,0,0,.55);padding:12px;z-index:30}
+    .popover h3{margin:.2rem 0 .4rem;font-size:16px}
+    .kv{display:grid;grid-template-columns:110px 1fr;gap:6px;font-size:12.8px;color:#cdd8e3}
+    .kv div{padding:2px 0}
+    .tag{display:inline-block;padding:.2rem .5rem;border-radius:999px;background:#1d2a39;border:1px solid #243548;color:#b7c6d8;font-size:11.5px}
+    .toolbar{display:flex;gap:10px;align-items:center;justify-content:space-between;margin:10px 0 14px}
+    .toolbar .btn{background:#172231;border:1px solid #223141;color:#d8e6f6;padding:8px 12px;border-radius:10px;cursor:pointer}
+    .toolbar .btn:active{transform:translateY(1px)}
+    .legend{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+    .pill{display:inline-flex;align-items:center;gap:8px;background:#121922;border:1px solid #223141;padding:6px 10px;border-radius:999px}
+    .dot{width:10px;height:10px;border-radius:999px}
+    .muted{color:var(--muted)}
+
+    /* Helper tooltip for coordinate picking */
+    .coord-hint{position:fixed;bottom:12px;right:12px;padding:8px 10px;background:#111722;border:1px solid #223141;border-radius:8px;font-size:12px;color:#c8d7ea}
+    a{color:#b8dcff}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1 style="font-size:22px;margin:6px 2px 10px">Sơ đồ nhà máy – điểm thông tin tương tác</h1>
+    <p class="muted" style="margin-top:0">Chỉnh sửa dữ liệu trực tiếp trên Google Sheets; trang này sẽ tải dữ liệu qua JSON. Di chuột (hoặc chạm) vào chấm tròn để xem thông tin.</p>
+
+    <div class="toolbar">
+      <div class="legend">
+        <span class="pill"><span class="dot" style="background:var(--ok)"></span> OK</span>
+        <span class="pill"><span class="dot" style="background:var(--warn)"></span> Cảnh báo</span>
+        <span class="pill"><span class="dot" style="background:var(--bad)"></span> Sự cố</span>
+        <span class="pill"><span class="dot" style="background:var(--accent)"></span> Khác</span>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button id="refreshBtn" class="btn">Tải lại dữ liệu</button>
+        <a id="sheetLink" class="btn" href="#" target="_blank" rel="noopener">Mở Google Sheet</a>
+        <label class="pill" style="cursor:pointer"><input id="editToggle" type="checkbox" style="margin-right:8px">Chế độ lấy toạ độ</label>
+      </div>
+    </div>
+
+    <div id="board" class="board">
+      <!-- Thay ảnh nền bên dưới bằng mặt bằng của bạn -->
+      <img id=\"floorImg\" src=\"sodonhammay_1.jpg\" alt="Factory floor plan" />
+      <!-- Hotspots sẽ được render bằng JS -->
+    </div>
+
+    <div class="coord-hint" id="coordHint" style="display:none">
+      Nhấp lên bản vẽ để lấy toạ độ (%). Dùng để điền vào cột <b>x_pct</b>, <b>y_pct</b> trong Sheet.
+      <div style="margin-top:6px" id="coordVal">x: –, y: –</div>
+    </div>
+
+    <p class="muted" style="margin-top:16px">Gợi ý: host file này trên GitHub Pages / Netlify / Vercel. Chỉ cần thay URL Sheets bên dưới là chạy.</p>
+  </div>
+
+  <script>
+    // ===================== CẤU HÌNH =====================
+    // 1) Tạo Google Sheet theo mẫu cột ở dưới.
+    // 2) Bật chia sẻ “Bất kỳ ai có link đều xem được”.
+    // 3) Lấy JSON qua opensheet (đơn giản):
+    //    https://opensheet.elk.sh/SPREADSHEET_ID/TÊN_SHEET
+    //    Ví dụ: const SHEET_JSON_URL = "https://opensheet.elk.sh/17YmmVafz78B5zWve0XrF7Y9Nj4nI7ovEn3TAwr8w8Bo/Hotspots";
+    //    Hoặc dùng CSV publish to web: .../export?format=csv (khi đó cần parser CSV).
+
+    const SHEET_JSON_URL = "REPLACE_WITH_YOUR_JSON_URL"; // <— THAY giá trị này
+    const SHEET_WEB_URL  = "https://docs.google.com/spreadsheets/d/17YmmVafz78B5zWve0XrF7Y9Nj4nI7ovEn3TAwr8w8Bo/edit?gid=1329490609#gid=1329490609"; // link mở Sheet
+
+    // Tên trường kỳ vọng từ Sheet (không phân biệt hoa thường):
+    // id, name (tên khu vực), area_m2 (diện tích), usage (công dụng), capacity (sức chứa), status (tình trạng), x_pct, y_pct, notes, link
+
+    const boardEl = document.getElementById('board');
+    const imgEl   = document.getElementById('floorImg');
+    const refreshBtn = document.getElementById('refreshBtn');
+    const sheetLink  = document.getElementById('sheetLink');
+    const editToggle = document.getElementById('editToggle');
+    const coordHint  = document.getElementById('coordHint');
+    const coordVal   = document.getElementById('coordVal');
+
+    sheetLink.href = SHEET_WEB_URL || '#';
+
+    let data = [];
+    let popoverEl = null;
+
+    function normKey(k){ return (k||'').toString().trim().toLowerCase(); }
+
+    function createHotspot(item){
+      const dot = document.createElement('button');
+      dot.className = 'hotspot';
+      dot.setAttribute('aria-label', item.name || 'Hotspot');
+      if(item.status) dot.dataset.status = item.status.toUpperCase();
+      dot.style.left = (parseFloat(item.x_pct)||0) + '%';
+      dot.style.top  = (parseFloat(item.y_pct)||0) + '%';
+
+      // Hover/click
+      const open = (ev)=> {
+        ev.stopPropagation();
+        openPopover(item, dot);
+      };
+      dot.addEventListener('mouseenter', open);
+      dot.addEventListener('click', open);
+      return dot;
+    }
+
+    function openPopover(item, anchor){
+      closePopover();
+      popoverEl = document.createElement('div');
+      popoverEl.className = 'popover';
+
+      const title = item.name || '(Không tên)';
+      const type  = item.type || '';
+      const status = item.status || '';
+
+      popoverEl.innerHTML = `
+        <div style="display:flex;align-items:center;gap:10px;justify-content:space-between">
+          <h3>${escapeHtml(title)}</h3>
+          <span class="tag">${escapeHtml(type)}${status? ' · '+escapeHtml(status):''}</span>
+        </div>
+        <div class="kv">
+          <div>Diện tích (m²)</div><div>${escapeHtml(item.area_m2||'')}</div>
+          <div>Công dụng</div><div>${escapeHtml(item.usage||'')}</div>
+          <div>Sức chứa</div><div>${escapeHtml(item.capacity||'')}</div>
+          <div>Tình trạng</div><div>${escapeHtml(item.status||'')}</div>
+          <div>Ghi chú</div><div>${escapeHtml(item.notes||'')}</div>
+          <div>Liên kết</div><div>${item.link? `<a href="${escapeAttr(item.link)}" target="_blank" rel="noopener">Mở</a>`:'—'}</div>
+          <div>Toạ độ</div><div>${escapeHtml(item.x_pct||'')}%, ${escapeHtml(item.y_pct||'')}%</div>
+        </div>
+        <div style="margin-top:10px;display:flex;gap:8px">
+          ${SHEET_WEB_URL? `<a class=\"btn\" href=\"${escapeAttr(SHEET_WEB_URL)}\" target=\"_blank\" rel=\"noopener\">Chỉnh sửa trên Sheet</a>`:''}
+          <button class="btn" onclick="closePopover()">Đóng</button>
+        </div>
+      `;
+
+      boardEl.appendChild(popoverEl);
+
+      // Positioning
+      const rectBoard = boardEl.getBoundingClientRect();
+      const rectAnchor = anchor.getBoundingClientRect();
+      const rect = { x: rectAnchor.left-rectBoard.left, y: rectAnchor.top-rectBoard.top, w: rectAnchor.width, h: rectAnchor.height };
+
+      const x = rect.x + rect.w + 10; // right side by default
+      const y = rect.y - 4;           // slightly up
+      popoverEl.style.left = Math.max(8, Math.min(x, rectBoard.width - 400)) + 'px';
+      popoverEl.style.top  = Math.max(8, Math.min(y, rectBoard.height - 180)) + 'px';
+    }
+
+    function closePopover(){
+      if(popoverEl){ popoverEl.remove(); popoverEl = null; }
+    }
+
+    function render(){
+      // clear hotspots
+      [...boardEl.querySelectorAll('.hotspot')].forEach(el=>el.remove());
+      data.forEach(item => {
+        const dot = createHotspot(item);
+        boardEl.appendChild(dot);
+      });
+    }
+
+    async function fetchSheet(){
+      if(!SHEET_JSON_URL || SHEET_JSON_URL.startsWith('REPLACE_')){
+        console.warn('Chưa cấu hình SHEET_JSON_URL');
+        return [];
+      }
+      const res = await fetch(SHEET_JSON_URL, {cache:'no-store'});
+      if(!res.ok) throw new Error('Không tải được dữ liệu: '+res.status);
+      const rows = await res.json();
+      // Map cột về key chuẩn
+      return rows.map(r => {
+        const o = {}; Object.keys(r).forEach(k=> o[normKey(k)] = r[k]);
+        return {
+          id: o.id||'',
+          name: o.name||o["tên khu vực"]||o["ten khu vuc"]||o["ten"]||'',
+          type: o.type||o.loại||o["loai"]||'',
+          x_pct: o.x_pct||o.x||'0',
+          y_pct: o.y_pct||o.y||'0',
+          status: o.status||o["tình trạng"]||o["tinh trang"]||'',
+          area_m2: o.area_m2||o["diện tích"]||o["dien tich"]||'',
+          usage: o.usage||o["công dụng"]||o["cong dung"]||'',
+          capacity: o.capacity||o["sức chứa"]||o["suc chua"]||'',
+          manager: o.manager||o.phụ_trách||o["phu trach"]||'',
+          notes: o.notes||o["ghi chú"]||o["ghi chu"]||'',
+          link: o.link||o["liên kết"]||o["lien ket"]||''
+        };
+      });
+    }
+
+    function escapeHtml(s){
+      return (s==null? '' : String(s)).replace(/[&<>\"]/g, c=> ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[c]));
+    }
+    function escapeAttr(s){
+      return escapeHtml(s).replace(/"/g,'%22');
+    }
+
+    async function load(){
+      try{
+        data = await fetchSheet();
+        render();
+      }catch(e){
+        console.error(e);
+        alert('Lỗi tải dữ liệu. Mở DevTools để xem chi tiết.');
+      }
+    }
+
+    refreshBtn.addEventListener('click', load);
+
+    // Close popover on click outside
+    document.addEventListener('click', (e)=>{
+      if(popoverEl && !popoverEl.contains(e.target)) closePopover();
+    });
+
+    // ======= Chế độ lấy toạ độ (ghi nhanh % vào Sheet) =======
+    editToggle.addEventListener('change', ()=>{
+      coordHint.style.display = editToggle.checked? 'block':'none';
+      boardEl.style.cursor = editToggle.checked? 'crosshair':'default';
+    });
+
+    boardEl.addEventListener('mousemove', (e)=>{
+      if(!editToggle.checked) return;
+      const p = pointPercent(e);
+      coordVal.textContent = `x: ${p.x.toFixed(2)}%, y: ${p.y.toFixed(2)}%`;
+    });
+
+    boardEl.addEventListener('click', (e)=>{
+      if(!editToggle.checked) return;
+      const p = pointPercent(e);
+      // Copy to clipboard for convenience
+      const txt = `${p.x.toFixed(2)}, ${p.y.toFixed(2)}`;
+      navigator.clipboard?.writeText(txt).catch(()=>{});
+      alert(`Toạ độ đã copy: ${txt}\n→ Dán vào cột x_pct, y_pct trong Google Sheet.`);
+    });
+
+    function pointPercent(e){
+      const rect = imgEl.getBoundingClientRect();
+      const x = ((e.clientX - rect.left) / rect.width) * 100;
+      const y = ((e.clientY - rect.top)  / rect.height) * 100;
+      return {x: Math.max(0, Math.min(100, x)), y: Math.max(0, Math.min(100, y))};
+    }
+
+    // Khởi động
+    load();
+  </script>
+</body>
+</html>
